@@ -1,501 +1,501 @@
-name: Test Xcode Build on Self-Hosted Runner
-
-on:
-  workflow_dispatch:
-  push:
-    branches:
-      - main
-  pull_request:
-
-jobs:
-  xcode-build-test:
-    name: Test Xcode Build
-    runs-on: [self-hosted, macOS, metamask-mobile]
-
-    env:
-      ISSUES_FOUND: ""
-      WARNINGS_FOUND: ""
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      # === SYSTEM REQUIREMENTS CHECKS ===
-      - name: Check system information
-        run: |
-          echo "🖥️ System Information:"
-          echo "- macOS Version: $(sw_vers -productVersion)"
-          echo "- macOS Build: $(sw_vers -buildVersion)"
-          echo "- Architecture: $(uname -m)"
-          echo "- Hostname: $(hostname)"
-          echo "- Available Memory: $(sysctl -n hw.memsize | awk '{ byte =$1 /1024/1024/1024; print byte " GB" }')"
-          echo "- CPU Cores: $(sysctl -n hw.ncpu)"
-          echo "- CPU Brand: $(sysctl -n machdep.cpu.brand_string || echo 'Unknown')"
-
-      - name: Check essential development tools
-        run: |
-          echo "🔧 Essential Development Tools:"
-
-          # Git version
-          if command -v git &> /dev/null; then
-            echo "✅ Git Version: $(git --version)"
-          else
-            echo "❌ Git not found"
-            echo "ISSUES_FOUND=${ISSUES_FOUND}Git not installed; " >> $GITHUB_ENV
-          fi
-
-          # Homebrew
-          if command -v brew &> /dev/null; then
-            echo "✅ Homebrew Version: $(brew --version | head -1)"
-            echo "- Homebrew Path: $(which brew)"
-          else
-            echo "⚠️ Homebrew not found (recommended for iOS development)"
-            echo "WARNINGS_FOUND=${WARNINGS_FOUND}Homebrew not installed; " >> $GITHUB_ENV
-          fi
-
-          # Watchman (recommended by Facebook)
-          if command -v watchman &> /dev/null; then
-            echo "✅ Watchman Version: $(watchman --version)"
-          else
-            echo "⚠️ Watchman not found (recommended for better file watching performance)"
-            echo "WARNINGS_FOUND=${WARNINGS_FOUND}Watchman not installed; " >> $GITHUB_ENV
-          fi
-
-          # xcbeautify (for prettier build output)
-          if command -v xcbeautify &> /dev/null; then
-            echo "✅ xcbeautify found (for prettier Xcode output)"
-          else
-            echo "⚠️ xcbeautify not found (will use raw xcodebuild output)"
-            echo "WARNINGS_FOUND=${WARNINGS_FOUND}xcbeautify not installed; " >> $GITHUB_ENV
-          fi
-
-      # === XCODE & IOS ENVIRONMENT CHECKS ===
-      - name: Check Xcode installation
-        run: |
-          echo "🔨 Xcode Environment:"
-          if command -v xcode-select &> /dev/null; then
-            echo "✅ Xcode Path: $(xcode-select -p)"
-
-            if xcodebuild -version &> /dev/null; then
-              echo "✅ Xcode Version: $(xcodebuild -version | head -1)"
-              echo "✅ Xcode Build Version: $(xcodebuild -version | tail -1)"
-            else
-              echo "❌ Xcodebuild command failed"
-              echo "ISSUES_FOUND=${ISSUES_FOUND}xcodebuild command not working; " >> $GITHUB_ENV
-            fi
-
-            # Check Command Line Tools
-            if xcode-select -p | grep -q "CommandLineTools"; then
-              echo "⚠️ Using Command Line Tools only (Xcode.app recommended)"
-              echo "WARNINGS_FOUND=${WARNINGS_FOUND}Using Command Line Tools only; " >> $GITHUB_ENV
-            else
-              echo "✅ Using full Xcode.app installation"
-            fi
-
-            # Available SDKs
-            echo "📚 Available iOS SDKs:"
-            xcodebuild -showsdks | grep iOS | head -3 || echo "No iOS SDKs found"
-
-            # Check iOS SDK version
-            if IOS_SDK_VERSION=$(xcodebuild -showsdks | grep iOS | tail -1 | awk '{print $4}' 2>/dev/null); then
-              echo "✅ Latest iOS SDK: $IOS_SDK_VERSION"
-            else
-              echo "❌ No iOS SDKs available"
-              echo "ISSUES_FOUND=${ISSUES_FOUND}No iOS SDKs available; " >> $GITHUB_ENV
-            fi
-
-          else
-            echo "❌ Xcode not found - xcode-select command missing"
-            echo "ISSUES_FOUND=${ISSUES_FOUND}Xcode not installed; " >> $GITHUB_ENV
-          fi
-
-      - name: Check iOS Simulators
-        run: |
-          echo "📱 iOS Simulator Environment:"
-
-          # List all available simulators
-          echo "Available iOS Simulators:"
-          xcrun simctl list devicetypes | grep iPhone | head -5
-
-          # Check available simulator runtimes
-          echo ""
-          echo "Available iOS Runtimes:"
-          xcrun simctl list runtimes | grep iOS | head -3
-
-          # Check for specific iPhone models
-          echo ""
-          echo "Checking for iPhone simulators:"
-          if xcrun simctl list devices available | grep -q "iPhone 15"; then
-            echo "✅ iPhone 15 simulator available"
-          elif xcrun simctl list devices available | grep -q "iPhone 14"; then
-            echo "✅ iPhone 14 simulator available (fallback option)"
-            AVAILABLE_IPHONE=$(xcrun simctl list devices available | grep "iPhone 14" | head -1 | sed 's/.*(\([^)]*\)).*/\1/')
-            echo "SIMULATOR_ID=$AVAILABLE_IPHONE" >> $GITHUB_ENV
-          elif xcrun simctl list devices available | grep -q "iPhone 13"; then
-            echo "✅ iPhone 13 simulator available (fallback option)"
-            AVAILABLE_IPHONE=$(xcrun simctl list devices available | grep "iPhone 13" | head -1 | sed 's/.*(\([^)]*\)).*/\1/')
-            echo "SIMULATOR_ID=$AVAILABLE_IPHONE" >> $GITHUB_ENV
-          else
-            echo "⚠️ No modern iPhone simulators found, using first available"
-            AVAILABLE_IPHONE=$(xcrun simctl list devices available | grep iPhone | head -1 | sed 's/.*(\([^)]*\)).*/\1/')
-            echo "Will use: $AVAILABLE_IPHONE"
-            echo "SIMULATOR_ID=$AVAILABLE_IPHONE" >> $GITHUB_ENV
-          fi
-
-      # === NODE.JS ECOSYSTEM CHECKS ===
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version-file: '.nvmrc'
-          cache: 'yarn'
-
-      - name: Verify Node.js ecosystem
-        run: |
-          echo "📦 Node.js Ecosystem:"
-
-          # Verify exact versions match requirements
-          EXPECTED_NODE_VERSION=$(cat .nvmrc)
-          ACTUAL_NODE_VERSION=$(node -v | sed 's/v//')
-
-          echo "- Expected Node.js: $EXPECTED_NODE_VERSION"
-          echo "- Actual Node.js: $ACTUAL_NODE_VERSION"
-
-          if [ "$EXPECTED_NODE_VERSION" = "$ACTUAL_NODE_VERSION" ]; then
-            echo "✅ Node.js version matches exactly"
-          else
-            echo "⚠️ Node.js version mismatch (may cause issues)"
-          fi
-
-          echo "- npm Version: $(npm -v)"
-          echo "- Yarn Version: $(yarn -v)"
-
-          # Check yarn version requirement
-          EXPECTED_YARN_VERSION="1.22.22"
-          ACTUAL_YARN_VERSION=$(yarn -v)
-          if [ "$EXPECTED_YARN_VERSION" = "$ACTUAL_YARN_VERSION" ]; then
-            echo "✅ Yarn version matches requirement"
-          else
-            echo "⚠️ Yarn version mismatch - expected: $EXPECTED_YARN_VERSION, got: $ACTUAL_YARN_VERSION"
-          fi
-
-          # Verify yarn cache
-          echo "- Yarn Cache: $(yarn cache dir)"
-
-      # === RUBY ECOSYSTEM CHECKS ===
-      - uses: ruby/setup-ruby@a6e6f86333f0a2523ece813039b8b4be04560854 #v1
-        with:
-          ruby-version: '3.1.6'
-        env:
-          BUNDLE_GEMFILE: ios/Gemfile
-      - name: Check Ruby ecosystem
-        run: |
-          echo "💎 Ruby Ecosystem:"
-
-          # Check Ruby version
-          EXPECTED_RUBY_VERSION=$(cat .ruby-version)
-          ACTUAL_RUBY_VERSION=$(ruby -v | awk '{print $2}')
-
-          echo "- Expected Ruby: $EXPECTED_RUBY_VERSION"
-          echo "- Actual Ruby: $ACTUAL_RUBY_VERSION"
-          echo "- Ruby Path: $(which ruby)"
-
-          # Check if using system Ruby (bad)
-          if [ "$(which ruby)" = "/usr/bin/ruby" ]; then
-            echo "⚠️ Using system Ruby - consider using rbenv or similar"
-          else
-            echo "✅ Using non-system Ruby"
-          fi
-
-          # Check Ruby version requirement
-          if [[ "$ACTUAL_RUBY_VERSION" > "$EXPECTED_RUBY_VERSION" ]] || [[ "$ACTUAL_RUBY_VERSION" = "$EXPECTED_RUBY_VERSION"* ]]; then
-            echo "✅ Ruby version meets requirement (>= $EXPECTED_RUBY_VERSION)"
-          else
-            echo "❌ Ruby version too old - need >= $EXPECTED_RUBY_VERSION"
-            echo "ISSUES_FOUND=${ISSUES_FOUND}Ruby version too old ($ACTUAL_RUBY_VERSION < $EXPECTED_RUBY_VERSION); " >> $GITHUB_ENV
-          fi
-
-          echo "- Gem Version: $(gem -v)"
-          echo "- RubyGems Path: $(gem env home)"
-
-      - name: Check bundler and CocoaPods
-        run: |
-          echo "☕ Ruby Gems & CocoaPods:"
-
-          # Check bundler
-          if command -v bundle &> /dev/null; then
-            echo "✅ Bundler Version: $(bundle -v)"
-          else
-            echo "❌ Bundler not found"
-            echo "ISSUES_FOUND=${ISSUES_FOUND}Bundler not installed; " >> $GITHUB_ENV
-          fi
-
-          # Check CocoaPods
-          if command -v pod &> /dev/null; then
-            POD_VERSION=$(pod --version)
-            echo "✅ CocoaPods Version: $POD_VERSION"
-
-            # Check expected CocoaPods version from Gemfile
-            EXPECTED_POD_VERSION="1.16.2"
-            if [[ "$POD_VERSION" = "$EXPECTED_POD_VERSION"* ]]; then
-              echo "✅ CocoaPods version matches Gemfile requirement"
-            else
-              echo "⚠️ CocoaPods version mismatch - Gemfile expects: $EXPECTED_POD_VERSION"
-              echo "WARNINGS_FOUND=${WARNINGS_FOUND}CocoaPods version mismatch; " >> $GITHUB_ENV
-            fi
-          else
-            echo "❌ CocoaPods not found"
-            echo "ISSUES_FOUND=${ISSUES_FOUND}CocoaPods not installed; " >> $GITHUB_ENV
-          fi
-
-          # Check CocoaPods repo
-          echo "- CocoaPods Repo: $(pod repo list | head -5)"
-
-      # === PROJECT DEPENDENCY INSTALLATION ===
-      - name: Install Node.js dependencies
-        run: |
-          echo "📥 Installing Node.js dependencies..."
-          yarn --immutable --verbose
-          echo "✅ Node.js dependencies installed successfully"
-
-      - name: Verify critical Node.js packages
-        run: |
-          echo "🔍 Verifying critical Node.js packages..."
-
-          # React Native
-          if [ -d "node_modules/react-native" ]; then
-            RN_VERSION=$(node -p "require('./node_modules/react-native/package.json').version")
-            echo "✅ React Native: $RN_VERSION"
-          else
-            echo "❌ react-native package missing"
-            echo "ISSUES_FOUND=${ISSUES_FOUND}React Native package missing; " >> $GITHUB_ENV
-          fi
-
-          # React Native CLI
-          if [ -d "node_modules/@react-native-community/cli" ]; then
-            CLI_VERSION=$(node -p "require('./node_modules/@react-native-community/cli/package.json').version")
-            echo "✅ React Native CLI: $CLI_VERSION"
-          else
-            echo "❌ @react-native-community/cli package missing"
-            echo "ISSUES_FOUND=${ISSUES_FOUND}React Native CLI package missing; " >> $GITHUB_ENV
-          fi
-
-          # MetaMask design system
-          if [ -d "node_modules/@metamask/design-system-react-native" ]; then
-            DS_VERSION=$(node -p "require('./node_modules/@metamask/design-system-react-native/package.json').version")
-            echo "✅ MetaMask Design System: $DS_VERSION"
-          else
-            echo "❌ @metamask/design-system-react-native package missing"
-            echo "ISSUES_FOUND=${ISSUES_FOUND}MetaMask Design System package missing; " >> $GITHUB_ENV
-          fi
-
-          # Expo
-          if [ -d "node_modules/expo" ]; then
-            EXPO_VERSION=$(node -p "require('./node_modules/expo/package.json').version")
-            echo "✅ Expo: $EXPO_VERSION"
-          else
-            echo "❌ expo package missing"
-            echo "ISSUES_FOUND=${ISSUES_FOUND}Expo package missing; " >> $GITHUB_ENV
-          fi
-
-          # TypeScript
-          if [ -d "node_modules/typescript" ]; then
-            TS_VERSION=$(node -p "require('./node_modules/typescript/package.json').version")
-            echo "✅ TypeScript: $TS_VERSION"
-          else
-            echo "❌ typescript package missing"
-            echo "ISSUES_FOUND=${ISSUES_FOUND}TypeScript package missing; " >> $GITHUB_ENV
-          fi
-
-      - name: Install Ruby gems
-        run: |
-          echo "💎 Installing Ruby gems..."
-          cd ios
-          bundle install --verbose
-          echo "✅ Ruby gems installed successfully"
-
-      - name: Install iOS dependencies
-        run: |
-          echo "🍎 Installing iOS CocoaPods dependencies..."
-          cd ios
-
-          # Show Podfile configuration
-          echo "Podfile configuration:"
-          echo "- New Architecture: $(grep -o 'newArchEnabled.*true' Podfile.properties.json || echo 'false')"
-
-          # Install pods with verbose output
-          pod install --repo-update --verbose
-          echo "✅ CocoaPods dependencies installed successfully"
-        env:
-          GITHUB_CI: "true"
-
-      # === PROJECT CONFIGURATION CHECKS ===
-      - name: Verify project configuration
-        run: |
-          echo "⚙️ Project Configuration:"
-
-          # Check environment files
-          echo "Environment files:"
-          for env_file in .js.env .ios.env .android.env .e2e.env; do
-            if [ -f "$env_file" ]; then
-              echo "✅ $env_file exists"
-            else
-              echo "⚠️ $env_file missing (will be created from example)"
-            fi
-          done
-
-          # Check TypeScript config
-          if [ -f "tsconfig.json" ]; then
-            echo "✅ TypeScript configuration found"
-          else
-            echo "❌ tsconfig.json missing"
-            echo "ISSUES_FOUND=${ISSUES_FOUND}TypeScript config missing; " >> $GITHUB_ENV
-          fi
-
-          # Check Metro config
-          if [ -f "metro.config.js" ]; then
-            echo "✅ Metro bundler configuration found"
-          else
-            echo "❌ metro.config.js missing"
-            echo "ISSUES_FOUND=${ISSUES_FOUND}Metro config missing; " >> $GITHUB_ENV
-          fi
-
-          # Check app config
-          if [ -f "app.config.js" ]; then
-            echo "✅ App configuration found"
-          else
-            echo "❌ app.config.js missing"
-            echo "ISSUES_FOUND=${ISSUES_FOUND}App config missing; " >> $GITHUB_ENV
-          fi
-
-      - name: Verify iOS workspace and configuration
-        run: |
-          echo "🔍 Verifying iOS workspace and configuration..."
-          cd ios
-
-          # Check workspace exists
-          if [ -f "MetaMask.xcworkspace/contents.xcworkspacedata" ]; then
-            echo "✅ MetaMask.xcworkspace found"
-          else
-            echo "❌ MetaMask.xcworkspace not found"
-            echo "ISSUES_FOUND=${ISSUES_FOUND}iOS workspace not found; " >> $GITHUB_ENV
-          fi
-
-          # Check Podfile
-          if [ -f "Podfile" ]; then
-            echo "✅ Podfile found"
-            echo "- iOS deployment target: $(grep 'platform :ios' Podfile)"
-          else
-            echo "❌ Podfile missing"
-            echo "ISSUES_FOUND=${ISSUES_FOUND}Podfile missing; " >> $GITHUB_ENV
-          fi
-
-          # Check Podfile.lock
-          if [ -f "Podfile.lock" ]; then
-            echo "✅ Podfile.lock found"
-            echo "- CocoaPods version: $(grep 'COCOAPODS:' Podfile.lock | head -1)"
-          else
-            echo "❌ Podfile.lock missing - pods not installed properly"
-            echo "ISSUES_FOUND=${ISSUES_FOUND}Podfile.lock missing; " >> $GITHUB_ENV
-          fi
-
-          # List available schemes (if workspace exists)
-          if [ -f "MetaMask.xcworkspace/contents.xcworkspacedata" ]; then
-            echo ""
-            echo "Available Xcode schemes:"
-            xcodebuild -workspace MetaMask.xcworkspace -list | grep -A 20 "Schemes:" | tail -10 || echo "Could not list schemes"
-
-            # Verify specific schemes exist
-            if xcodebuild -workspace MetaMask.xcworkspace -list | grep -q "MetaMask$"; then
-              echo "✅ MetaMask scheme found"
-            else
-              echo "❌ MetaMask scheme not found"
-              echo "ISSUES_FOUND=${ISSUES_FOUND}MetaMask scheme not found; " >> $GITHUB_ENV
-            fi
-
-            if xcodebuild -workspace MetaMask.xcworkspace -list | grep -q "MetaMask-QA"; then
-              echo "✅ MetaMask-QA scheme found"
-            else
-              echo "⚠️ MetaMask-QA scheme not found"
-              echo "WARNINGS_FOUND=${WARNINGS_FOUND}MetaMask-QA scheme not found; " >> $GITHUB_ENV
-            fi
-          fi
-
-      # === BUILD PROCESS (DISABLED) ===
-      - name: Build readiness check
-        run: |
-          echo "🏗️ Build Process Status: DISABLED"
-          echo ""
-          echo "ℹ️  Actual iOS build is currently disabled to prevent file pollution on runners."
-          echo "ℹ️  This workflow only performs dependency and environment validation."
-          echo ""
-          echo "To enable building, uncomment and modify the build steps in this workflow."
-          echo ""
-
-          # Show what build command would be used
-          DESTINATION="platform=iOS Simulator,name=iPhone 15,OS=latest"
-          if [ ! -z "$SIMULATOR_ID" ]; then
-            DESTINATION="platform=iOS Simulator,id=$SIMULATOR_ID"
-          fi
-
-          echo "📋 Build command that would be executed:"
-          echo "   cd ios"
-          echo "   xcodebuild -workspace MetaMask.xcworkspace \\"
-          echo "     -scheme MetaMask \\"
-          echo "     -configuration Debug \\"
-          echo "     -destination \"$DESTINATION\" \\"
-          echo "     -derivedDataPath build/ \\"
-          echo "     clean build"
-
-      - name: Environment validation summary
-        run: |
-          echo "🎉 Environment Validation Complete!"
-          echo ""
-          echo "=== VALIDATION SUMMARY ==="
-          echo "✅ System information collected"
-          echo "✅ Development tools checked"
-          echo "✅ Node.js ecosystem verified"
-          echo "✅ Ruby ecosystem verified"
-          echo "✅ Dependencies analyzed"
-          echo "✅ iOS workspace analyzed"
-          echo "ℹ️  Build process disabled (validation only)"
-          echo ""
-
-          # Display issues found
-          if [ -n "$ISSUES_FOUND" ] && [ "$ISSUES_FOUND" != "" ]; then
-            echo "❌ CRITICAL ISSUES FOUND:"
-            IFS=';' read -ra ISSUES_ARRAY <<< "$ISSUES_FOUND"
-            for issue in "${ISSUES_ARRAY[@]}"; do
-              if [ -n "$issue" ] && [ "$issue" != "" ]; then
-                echo "   • $issue"
-              fi
-            done
-            echo ""
-          fi
-
-          # Display warnings found
-          if [ -n "$WARNINGS_FOUND" ] && [ "$WARNINGS_FOUND" != "" ]; then
-            echo "⚠️  WARNINGS FOUND:"
-            IFS=';' read -ra WARNINGS_ARRAY <<< "$WARNINGS_FOUND"
-            for warning in "${WARNINGS_ARRAY[@]}"; do
-              if [ -n "$warning" ] && [ "$warning" != "" ]; then
-                echo "   • $warning"
-              fi
-            done
-            echo ""
-          fi
-
-          # Final status
-          if [ -z "$ISSUES_FOUND" ] || [ "$ISSUES_FOUND" = "" ]; then
-            if [ -z "$WARNINGS_FOUND" ] || [ "$WARNINGS_FOUND" = "" ]; then
-              echo "🎊 RESULT: Environment is fully ready for MetaMask iOS development! 🚀"
-            else
-              echo "✅ RESULT: Environment is ready with minor recommendations above."
-            fi
-          else
-            echo "🔧 RESULT: Environment needs attention - please address critical issues above."
-            echo ""
-            echo "💡 TIP: Fix critical issues and re-run this workflow to verify."
-          fi
-
-          echo ""
-          echo "📊 Validation completed without modifying runner environment."
+# name: Test Xcode Build on Self-Hosted Runner
+
+# on:
+#   workflow_dispatch:
+#   push:
+#     branches:
+#       - main
+#   pull_request:
+
+# jobs:
+#   xcode-build-test:
+#     name: Test Xcode Build
+#     runs-on: [self-hosted, macOS, metamask-mobile]
+
+#     env:
+#       ISSUES_FOUND: ""
+#       WARNINGS_FOUND: ""
+
+#     steps:
+#       - name: Checkout repository
+#         uses: actions/checkout@v4
+
+#       # === SYSTEM REQUIREMENTS CHECKS ===
+#       - name: Check system information
+#         run: |
+#           echo "🖥️ System Information:"
+#           echo "- macOS Version: $(sw_vers -productVersion)"
+#           echo "- macOS Build: $(sw_vers -buildVersion)"
+#           echo "- Architecture: $(uname -m)"
+#           echo "- Hostname: $(hostname)"
+#           echo "- Available Memory: $(sysctl -n hw.memsize | awk '{ byte =$1 /1024/1024/1024; print byte " GB" }')"
+#           echo "- CPU Cores: $(sysctl -n hw.ncpu)"
+#           echo "- CPU Brand: $(sysctl -n machdep.cpu.brand_string || echo 'Unknown')"
+
+#       - name: Check essential development tools
+#         run: |
+#           echo "🔧 Essential Development Tools:"
+
+#           # Git version
+#           if command -v git &> /dev/null; then
+#             echo "✅ Git Version: $(git --version)"
+#           else
+#             echo "❌ Git not found"
+#             echo "ISSUES_FOUND=${ISSUES_FOUND}Git not installed; " >> $GITHUB_ENV
+#           fi
+
+#           # Homebrew
+#           if command -v brew &> /dev/null; then
+#             echo "✅ Homebrew Version: $(brew --version | head -1)"
+#             echo "- Homebrew Path: $(which brew)"
+#           else
+#             echo "⚠️ Homebrew not found (recommended for iOS development)"
+#             echo "WARNINGS_FOUND=${WARNINGS_FOUND}Homebrew not installed; " >> $GITHUB_ENV
+#           fi
+
+#           # Watchman (recommended by Facebook)
+#           if command -v watchman &> /dev/null; then
+#             echo "✅ Watchman Version: $(watchman --version)"
+#           else
+#             echo "⚠️ Watchman not found (recommended for better file watching performance)"
+#             echo "WARNINGS_FOUND=${WARNINGS_FOUND}Watchman not installed; " >> $GITHUB_ENV
+#           fi
+
+#           # xcbeautify (for prettier build output)
+#           if command -v xcbeautify &> /dev/null; then
+#             echo "✅ xcbeautify found (for prettier Xcode output)"
+#           else
+#             echo "⚠️ xcbeautify not found (will use raw xcodebuild output)"
+#             echo "WARNINGS_FOUND=${WARNINGS_FOUND}xcbeautify not installed; " >> $GITHUB_ENV
+#           fi
+
+#       # === XCODE & IOS ENVIRONMENT CHECKS ===
+#       - name: Check Xcode installation
+#         run: |
+#           echo "🔨 Xcode Environment:"
+#           if command -v xcode-select &> /dev/null; then
+#             echo "✅ Xcode Path: $(xcode-select -p)"
+
+#             if xcodebuild -version &> /dev/null; then
+#               echo "✅ Xcode Version: $(xcodebuild -version | head -1)"
+#               echo "✅ Xcode Build Version: $(xcodebuild -version | tail -1)"
+#             else
+#               echo "❌ Xcodebuild command failed"
+#               echo "ISSUES_FOUND=${ISSUES_FOUND}xcodebuild command not working; " >> $GITHUB_ENV
+#             fi
+
+#             # Check Command Line Tools
+#             if xcode-select -p | grep -q "CommandLineTools"; then
+#               echo "⚠️ Using Command Line Tools only (Xcode.app recommended)"
+#               echo "WARNINGS_FOUND=${WARNINGS_FOUND}Using Command Line Tools only; " >> $GITHUB_ENV
+#             else
+#               echo "✅ Using full Xcode.app installation"
+#             fi
+
+#             # Available SDKs
+#             echo "📚 Available iOS SDKs:"
+#             xcodebuild -showsdks | grep iOS | head -3 || echo "No iOS SDKs found"
+
+#             # Check iOS SDK version
+#             if IOS_SDK_VERSION=$(xcodebuild -showsdks | grep iOS | tail -1 | awk '{print $4}' 2>/dev/null); then
+#               echo "✅ Latest iOS SDK: $IOS_SDK_VERSION"
+#             else
+#               echo "❌ No iOS SDKs available"
+#               echo "ISSUES_FOUND=${ISSUES_FOUND}No iOS SDKs available; " >> $GITHUB_ENV
+#             fi
+
+#           else
+#             echo "❌ Xcode not found - xcode-select command missing"
+#             echo "ISSUES_FOUND=${ISSUES_FOUND}Xcode not installed; " >> $GITHUB_ENV
+#           fi
+
+#       - name: Check iOS Simulators
+#         run: |
+#           echo "📱 iOS Simulator Environment:"
+
+#           # List all available simulators
+#           echo "Available iOS Simulators:"
+#           xcrun simctl list devicetypes | grep iPhone | head -5
+
+#           # Check available simulator runtimes
+#           echo ""
+#           echo "Available iOS Runtimes:"
+#           xcrun simctl list runtimes | grep iOS | head -3
+
+#           # Check for specific iPhone models
+#           echo ""
+#           echo "Checking for iPhone simulators:"
+#           if xcrun simctl list devices available | grep -q "iPhone 15"; then
+#             echo "✅ iPhone 15 simulator available"
+#           elif xcrun simctl list devices available | grep -q "iPhone 14"; then
+#             echo "✅ iPhone 14 simulator available (fallback option)"
+#             AVAILABLE_IPHONE=$(xcrun simctl list devices available | grep "iPhone 14" | head -1 | sed 's/.*(\([^)]*\)).*/\1/')
+#             echo "SIMULATOR_ID=$AVAILABLE_IPHONE" >> $GITHUB_ENV
+#           elif xcrun simctl list devices available | grep -q "iPhone 13"; then
+#             echo "✅ iPhone 13 simulator available (fallback option)"
+#             AVAILABLE_IPHONE=$(xcrun simctl list devices available | grep "iPhone 13" | head -1 | sed 's/.*(\([^)]*\)).*/\1/')
+#             echo "SIMULATOR_ID=$AVAILABLE_IPHONE" >> $GITHUB_ENV
+#           else
+#             echo "⚠️ No modern iPhone simulators found, using first available"
+#             AVAILABLE_IPHONE=$(xcrun simctl list devices available | grep iPhone | head -1 | sed 's/.*(\([^)]*\)).*/\1/')
+#             echo "Will use: $AVAILABLE_IPHONE"
+#             echo "SIMULATOR_ID=$AVAILABLE_IPHONE" >> $GITHUB_ENV
+#           fi
+
+#       # === NODE.JS ECOSYSTEM CHECKS ===
+#       - name: Setup Node.js
+#         uses: actions/setup-node@v4
+#         with:
+#           node-version-file: '.nvmrc'
+#           cache: 'yarn'
+
+#       - name: Verify Node.js ecosystem
+#         run: |
+#           echo "📦 Node.js Ecosystem:"
+
+#           # Verify exact versions match requirements
+#           EXPECTED_NODE_VERSION=$(cat .nvmrc)
+#           ACTUAL_NODE_VERSION=$(node -v | sed 's/v//')
+
+#           echo "- Expected Node.js: $EXPECTED_NODE_VERSION"
+#           echo "- Actual Node.js: $ACTUAL_NODE_VERSION"
+
+#           if [ "$EXPECTED_NODE_VERSION" = "$ACTUAL_NODE_VERSION" ]; then
+#             echo "✅ Node.js version matches exactly"
+#           else
+#             echo "⚠️ Node.js version mismatch (may cause issues)"
+#           fi
+
+#           echo "- npm Version: $(npm -v)"
+#           echo "- Yarn Version: $(yarn -v)"
+
+#           # Check yarn version requirement
+#           EXPECTED_YARN_VERSION="1.22.22"
+#           ACTUAL_YARN_VERSION=$(yarn -v)
+#           if [ "$EXPECTED_YARN_VERSION" = "$ACTUAL_YARN_VERSION" ]; then
+#             echo "✅ Yarn version matches requirement"
+#           else
+#             echo "⚠️ Yarn version mismatch - expected: $EXPECTED_YARN_VERSION, got: $ACTUAL_YARN_VERSION"
+#           fi
+
+#           # Verify yarn cache
+#           echo "- Yarn Cache: $(yarn cache dir)"
+
+#       # === RUBY ECOSYSTEM CHECKS ===
+#       - uses: ruby/setup-ruby@a6e6f86333f0a2523ece813039b8b4be04560854 #v1
+#         with:
+#           ruby-version: '3.1.6'
+#         env:
+#           BUNDLE_GEMFILE: ios/Gemfile
+#       - name: Check Ruby ecosystem
+#         run: |
+#           echo "💎 Ruby Ecosystem:"
+
+#           # Check Ruby version
+#           EXPECTED_RUBY_VERSION=$(cat .ruby-version)
+#           ACTUAL_RUBY_VERSION=$(ruby -v | awk '{print $2}')
+
+#           echo "- Expected Ruby: $EXPECTED_RUBY_VERSION"
+#           echo "- Actual Ruby: $ACTUAL_RUBY_VERSION"
+#           echo "- Ruby Path: $(which ruby)"
+
+#           # Check if using system Ruby (bad)
+#           if [ "$(which ruby)" = "/usr/bin/ruby" ]; then
+#             echo "⚠️ Using system Ruby - consider using rbenv or similar"
+#           else
+#             echo "✅ Using non-system Ruby"
+#           fi
+
+#           # Check Ruby version requirement
+#           if [[ "$ACTUAL_RUBY_VERSION" > "$EXPECTED_RUBY_VERSION" ]] || [[ "$ACTUAL_RUBY_VERSION" = "$EXPECTED_RUBY_VERSION"* ]]; then
+#             echo "✅ Ruby version meets requirement (>= $EXPECTED_RUBY_VERSION)"
+#           else
+#             echo "❌ Ruby version too old - need >= $EXPECTED_RUBY_VERSION"
+#             echo "ISSUES_FOUND=${ISSUES_FOUND}Ruby version too old ($ACTUAL_RUBY_VERSION < $EXPECTED_RUBY_VERSION); " >> $GITHUB_ENV
+#           fi
+
+#           echo "- Gem Version: $(gem -v)"
+#           echo "- RubyGems Path: $(gem env home)"
+
+#       - name: Check bundler and CocoaPods
+#         run: |
+#           echo "☕ Ruby Gems & CocoaPods:"
+
+#           # Check bundler
+#           if command -v bundle &> /dev/null; then
+#             echo "✅ Bundler Version: $(bundle -v)"
+#           else
+#             echo "❌ Bundler not found"
+#             echo "ISSUES_FOUND=${ISSUES_FOUND}Bundler not installed; " >> $GITHUB_ENV
+#           fi
+
+#           # Check CocoaPods
+#           if command -v pod &> /dev/null; then
+#             POD_VERSION=$(pod --version)
+#             echo "✅ CocoaPods Version: $POD_VERSION"
+
+#             # Check expected CocoaPods version from Gemfile
+#             EXPECTED_POD_VERSION="1.16.2"
+#             if [[ "$POD_VERSION" = "$EXPECTED_POD_VERSION"* ]]; then
+#               echo "✅ CocoaPods version matches Gemfile requirement"
+#             else
+#               echo "⚠️ CocoaPods version mismatch - Gemfile expects: $EXPECTED_POD_VERSION"
+#               echo "WARNINGS_FOUND=${WARNINGS_FOUND}CocoaPods version mismatch; " >> $GITHUB_ENV
+#             fi
+#           else
+#             echo "❌ CocoaPods not found"
+#             echo "ISSUES_FOUND=${ISSUES_FOUND}CocoaPods not installed; " >> $GITHUB_ENV
+#           fi
+
+#           # Check CocoaPods repo
+#           echo "- CocoaPods Repo: $(pod repo list | head -5)"
+
+#       # === PROJECT DEPENDENCY INSTALLATION ===
+#       - name: Install Node.js dependencies
+#         run: |
+#           echo "📥 Installing Node.js dependencies..."
+#           yarn --immutable --verbose
+#           echo "✅ Node.js dependencies installed successfully"
+
+#       - name: Verify critical Node.js packages
+#         run: |
+#           echo "🔍 Verifying critical Node.js packages..."
+
+#           # React Native
+#           if [ -d "node_modules/react-native" ]; then
+#             RN_VERSION=$(node -p "require('./node_modules/react-native/package.json').version")
+#             echo "✅ React Native: $RN_VERSION"
+#           else
+#             echo "❌ react-native package missing"
+#             echo "ISSUES_FOUND=${ISSUES_FOUND}React Native package missing; " >> $GITHUB_ENV
+#           fi
+
+#           # React Native CLI
+#           if [ -d "node_modules/@react-native-community/cli" ]; then
+#             CLI_VERSION=$(node -p "require('./node_modules/@react-native-community/cli/package.json').version")
+#             echo "✅ React Native CLI: $CLI_VERSION"
+#           else
+#             echo "❌ @react-native-community/cli package missing"
+#             echo "ISSUES_FOUND=${ISSUES_FOUND}React Native CLI package missing; " >> $GITHUB_ENV
+#           fi
+
+#           # MetaMask design system
+#           if [ -d "node_modules/@metamask/design-system-react-native" ]; then
+#             DS_VERSION=$(node -p "require('./node_modules/@metamask/design-system-react-native/package.json').version")
+#             echo "✅ MetaMask Design System: $DS_VERSION"
+#           else
+#             echo "❌ @metamask/design-system-react-native package missing"
+#             echo "ISSUES_FOUND=${ISSUES_FOUND}MetaMask Design System package missing; " >> $GITHUB_ENV
+#           fi
+
+#           # Expo
+#           if [ -d "node_modules/expo" ]; then
+#             EXPO_VERSION=$(node -p "require('./node_modules/expo/package.json').version")
+#             echo "✅ Expo: $EXPO_VERSION"
+#           else
+#             echo "❌ expo package missing"
+#             echo "ISSUES_FOUND=${ISSUES_FOUND}Expo package missing; " >> $GITHUB_ENV
+#           fi
+
+#           # TypeScript
+#           if [ -d "node_modules/typescript" ]; then
+#             TS_VERSION=$(node -p "require('./node_modules/typescript/package.json').version")
+#             echo "✅ TypeScript: $TS_VERSION"
+#           else
+#             echo "❌ typescript package missing"
+#             echo "ISSUES_FOUND=${ISSUES_FOUND}TypeScript package missing; " >> $GITHUB_ENV
+#           fi
+
+#       - name: Install Ruby gems
+#         run: |
+#           echo "💎 Installing Ruby gems..."
+#           cd ios
+#           bundle install --verbose
+#           echo "✅ Ruby gems installed successfully"
+
+#       - name: Install iOS dependencies
+#         run: |
+#           echo "🍎 Installing iOS CocoaPods dependencies..."
+#           cd ios
+
+#           # Show Podfile configuration
+#           echo "Podfile configuration:"
+#           echo "- New Architecture: $(grep -o 'newArchEnabled.*true' Podfile.properties.json || echo 'false')"
+
+#           # Install pods with verbose output
+#           pod install --repo-update --verbose
+#           echo "✅ CocoaPods dependencies installed successfully"
+#         env:
+#           GITHUB_CI: "true"
+
+#       # === PROJECT CONFIGURATION CHECKS ===
+#       - name: Verify project configuration
+#         run: |
+#           echo "⚙️ Project Configuration:"
+
+#           # Check environment files
+#           echo "Environment files:"
+#           for env_file in .js.env .ios.env .android.env .e2e.env; do
+#             if [ -f "$env_file" ]; then
+#               echo "✅ $env_file exists"
+#             else
+#               echo "⚠️ $env_file missing (will be created from example)"
+#             fi
+#           done
+
+#           # Check TypeScript config
+#           if [ -f "tsconfig.json" ]; then
+#             echo "✅ TypeScript configuration found"
+#           else
+#             echo "❌ tsconfig.json missing"
+#             echo "ISSUES_FOUND=${ISSUES_FOUND}TypeScript config missing; " >> $GITHUB_ENV
+#           fi
+
+#           # Check Metro config
+#           if [ -f "metro.config.js" ]; then
+#             echo "✅ Metro bundler configuration found"
+#           else
+#             echo "❌ metro.config.js missing"
+#             echo "ISSUES_FOUND=${ISSUES_FOUND}Metro config missing; " >> $GITHUB_ENV
+#           fi
+
+#           # Check app config
+#           if [ -f "app.config.js" ]; then
+#             echo "✅ App configuration found"
+#           else
+#             echo "❌ app.config.js missing"
+#             echo "ISSUES_FOUND=${ISSUES_FOUND}App config missing; " >> $GITHUB_ENV
+#           fi
+
+#       - name: Verify iOS workspace and configuration
+#         run: |
+#           echo "🔍 Verifying iOS workspace and configuration..."
+#           cd ios
+
+#           # Check workspace exists
+#           if [ -f "MetaMask.xcworkspace/contents.xcworkspacedata" ]; then
+#             echo "✅ MetaMask.xcworkspace found"
+#           else
+#             echo "❌ MetaMask.xcworkspace not found"
+#             echo "ISSUES_FOUND=${ISSUES_FOUND}iOS workspace not found; " >> $GITHUB_ENV
+#           fi
+
+#           # Check Podfile
+#           if [ -f "Podfile" ]; then
+#             echo "✅ Podfile found"
+#             echo "- iOS deployment target: $(grep 'platform :ios' Podfile)"
+#           else
+#             echo "❌ Podfile missing"
+#             echo "ISSUES_FOUND=${ISSUES_FOUND}Podfile missing; " >> $GITHUB_ENV
+#           fi
+
+#           # Check Podfile.lock
+#           if [ -f "Podfile.lock" ]; then
+#             echo "✅ Podfile.lock found"
+#             echo "- CocoaPods version: $(grep 'COCOAPODS:' Podfile.lock | head -1)"
+#           else
+#             echo "❌ Podfile.lock missing - pods not installed properly"
+#             echo "ISSUES_FOUND=${ISSUES_FOUND}Podfile.lock missing; " >> $GITHUB_ENV
+#           fi
+
+#           # List available schemes (if workspace exists)
+#           if [ -f "MetaMask.xcworkspace/contents.xcworkspacedata" ]; then
+#             echo ""
+#             echo "Available Xcode schemes:"
+#             xcodebuild -workspace MetaMask.xcworkspace -list | grep -A 20 "Schemes:" | tail -10 || echo "Could not list schemes"
+
+#             # Verify specific schemes exist
+#             if xcodebuild -workspace MetaMask.xcworkspace -list | grep -q "MetaMask$"; then
+#               echo "✅ MetaMask scheme found"
+#             else
+#               echo "❌ MetaMask scheme not found"
+#               echo "ISSUES_FOUND=${ISSUES_FOUND}MetaMask scheme not found; " >> $GITHUB_ENV
+#             fi
+
+#             if xcodebuild -workspace MetaMask.xcworkspace -list | grep -q "MetaMask-QA"; then
+#               echo "✅ MetaMask-QA scheme found"
+#             else
+#               echo "⚠️ MetaMask-QA scheme not found"
+#               echo "WARNINGS_FOUND=${WARNINGS_FOUND}MetaMask-QA scheme not found; " >> $GITHUB_ENV
+#             fi
+#           fi
+
+#       # === BUILD PROCESS (DISABLED) ===
+#       - name: Build readiness check
+#         run: |
+#           echo "🏗️ Build Process Status: DISABLED"
+#           echo ""
+#           echo "ℹ️  Actual iOS build is currently disabled to prevent file pollution on runners."
+#           echo "ℹ️  This workflow only performs dependency and environment validation."
+#           echo ""
+#           echo "To enable building, uncomment and modify the build steps in this workflow."
+#           echo ""
+
+#           # Show what build command would be used
+#           DESTINATION="platform=iOS Simulator,name=iPhone 15,OS=latest"
+#           if [ ! -z "$SIMULATOR_ID" ]; then
+#             DESTINATION="platform=iOS Simulator,id=$SIMULATOR_ID"
+#           fi
+
+#           echo "📋 Build command that would be executed:"
+#           echo "   cd ios"
+#           echo "   xcodebuild -workspace MetaMask.xcworkspace \\"
+#           echo "     -scheme MetaMask \\"
+#           echo "     -configuration Debug \\"
+#           echo "     -destination \"$DESTINATION\" \\"
+#           echo "     -derivedDataPath build/ \\"
+#           echo "     clean build"
+
+#       - name: Environment validation summary
+#         run: |
+#           echo "🎉 Environment Validation Complete!"
+#           echo ""
+#           echo "=== VALIDATION SUMMARY ==="
+#           echo "✅ System information collected"
+#           echo "✅ Development tools checked"
+#           echo "✅ Node.js ecosystem verified"
+#           echo "✅ Ruby ecosystem verified"
+#           echo "✅ Dependencies analyzed"
+#           echo "✅ iOS workspace analyzed"
+#           echo "ℹ️  Build process disabled (validation only)"
+#           echo ""
+
+#           # Display issues found
+#           if [ -n "$ISSUES_FOUND" ] && [ "$ISSUES_FOUND" != "" ]; then
+#             echo "❌ CRITICAL ISSUES FOUND:"
+#             IFS=';' read -ra ISSUES_ARRAY <<< "$ISSUES_FOUND"
+#             for issue in "${ISSUES_ARRAY[@]}"; do
+#               if [ -n "$issue" ] && [ "$issue" != "" ]; then
+#                 echo "   • $issue"
+#               fi
+#             done
+#             echo ""
+#           fi
+
+#           # Display warnings found
+#           if [ -n "$WARNINGS_FOUND" ] && [ "$WARNINGS_FOUND" != "" ]; then
+#             echo "⚠️  WARNINGS FOUND:"
+#             IFS=';' read -ra WARNINGS_ARRAY <<< "$WARNINGS_FOUND"
+#             for warning in "${WARNINGS_ARRAY[@]}"; do
+#               if [ -n "$warning" ] && [ "$warning" != "" ]; then
+#                 echo "   • $warning"
+#               fi
+#             done
+#             echo ""
+#           fi
+
+#           # Final status
+#           if [ -z "$ISSUES_FOUND" ] || [ "$ISSUES_FOUND" = "" ]; then
+#             if [ -z "$WARNINGS_FOUND" ] || [ "$WARNINGS_FOUND" = "" ]; then
+#               echo "🎊 RESULT: Environment is fully ready for MetaMask iOS development! 🚀"
+#             else
+#               echo "✅ RESULT: Environment is ready with minor recommendations above."
+#             fi
+#           else
+#             echo "🔧 RESULT: Environment needs attention - please address critical issues above."
+#             echo ""
+#             echo "💡 TIP: Fix critical issues and re-run this workflow to verify."
+#           fi
+
+#           echo ""
+#           echo "📊 Validation completed without modifying runner environment."
