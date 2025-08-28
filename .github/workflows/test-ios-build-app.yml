@@ -62,7 +62,6 @@ jobs:
           platform: ios
           setup-simulator: false
 
-
       - name: Print iOS tool versions
         run: |
             echo "🔧 Node.js Version:"
