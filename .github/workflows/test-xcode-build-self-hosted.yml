@@ -1,0 +1,147 @@
+name: Test Xcode Build on Self-Hosted Runner
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  xcode-build-test:
+    name: Test Xcode Build
+    runs-on: [self-hosted, macOS, metamask-mobile]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check system information
+        run: |
+          echo "🖥️ System Information:"
+          echo "- macOS Version: $(sw_vers -productVersion)"
+          echo "- Architecture: $(uname -m)"
+          echo "- Available Memory: $(sysctl -n hw.memsize | awk '{ byte =$1 /1024/1024/1024; print byte " GB" }')"
+          echo "- CPU Cores: $(sysctl -n hw.ncpu)"
+
+      - name: Check Xcode installation
+        run: |
+          echo "🔨 Xcode Information:"
+          if command -v xcode-select &> /dev/null; then
+            echo "- Xcode Path: $(xcode-select -p)"
+            echo "- Xcode Version: $(xcodebuild -version | head -1)"
+            echo "- Available SDKs: $(xcodebuild -showsdks | grep iOS | tail -1)"
+          else
+            echo "❌ Xcode not found"
+            exit 1
+          fi
+
+      - name: Check iOS Simulators
+        run: |
+          echo "📱 iOS Simulators:"
+          xcrun simctl list devices available | grep -E "iPhone|iPad" | head -5
+          echo "- Checking for iPhone 15 simulator..."
+          if xcrun simctl list devices available | grep -q "iPhone 15"; then
+            echo "✅ iPhone 15 simulator available"
+          else
+            echo "⚠️ iPhone 15 simulator not found, will use first available iPhone"
+            AVAILABLE_IPHONE=$(xcrun simctl list devices available | grep iPhone | head -1 | sed 's/.*(\([^)]*\)).*/\1/')
+            echo "Will use: $AVAILABLE_IPHONE"
+            echo "SIMULATOR_ID=$AVAILABLE_IPHONE" >> $GITHUB_ENV
+          fi
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: '.nvmrc'
+          cache: 'yarn'
+
+      - name: Check Node.js and package managers
+        run: |
+          echo "📦 Development Tools:"
+          echo "- Node.js Version: $(node -v)"
+          echo "- npm Version: $(npm -v)"
+          echo "- Yarn Version: $(yarn -v)"
+
+      - name: Check CocoaPods installation
+        run: |
+          echo "☕ CocoaPods Information:"
+          if command -v pod &> /dev/null; then
+            echo "- CocoaPods Version: $(pod --version)"
+            echo "- Ruby Version: $(ruby -v)"
+            echo "- Gem Version: $(gem -v)"
+          else
+            echo "❌ CocoaPods not found"
+            exit 1
+          fi
+
+      - name: Install dependencies
+        run: |
+          echo "📥 Installing Node.js dependencies..."
+          yarn --immutable
+          echo "✅ Node.js dependencies installed successfully"
+
+      - name: Verify critical dependencies
+        run: |
+          echo "🔍 Verifying critical Node modules..."
+          if [ -d "node_modules/react-native" ]; then
+            echo "✅ react-native found: $(node -p "require('./node_modules/react-native/package.json').version")"
+          else
+            echo "❌ react-native not found"
+            exit 1
+          fi
+
+          if [ -d "node_modules/@react-native-community/cli" ]; then
+            echo "✅ React Native CLI found"
+          else
+            echo "❌ React Native CLI not found"
+            exit 1
+          fi
+
+      - name: Install iOS dependencies
+        run: |
+          echo "🍎 Installing iOS dependencies..."
+          cd ios
+          pod install --repo-update --verbose
+          echo "✅ CocoaPods dependencies installed successfully"
+        env:
+          GITHUB_CI: "true"
+
+      - name: Verify iOS workspace
+        run: |
+          echo "🔍 Verifying iOS workspace and schemes..."
+          cd ios
+          if [ -f "MetaMask.xcworkspace/contents.xcworkspacedata" ]; then
+            echo "✅ MetaMask.xcworkspace found"
+          else
+            echo "❌ MetaMask.xcworkspace not found"
+            exit 1
+          fi
+
+          echo "Available schemes:"
+          xcodebuild -workspace MetaMask.xcworkspace -list
+
+      - name: Build iOS app
+        run: |
+          echo "🏗️ Building iOS app..."
+          cd ios
+
+          # Use environment variable if iPhone 15 wasn't available
+          DESTINATION="platform=iOS Simulator,name=iPhone 15,OS=latest"
+          if [ ! -z "$SIMULATOR_ID" ]; then
+            DESTINATION="platform=iOS Simulator,id=$SIMULATOR_ID"
+          fi
+
+          xcodebuild -workspace MetaMask.xcworkspace \
+            -scheme MetaMask \
+            -configuration Debug \
+            -destination "$DESTINATION" \
+            -derivedDataPath build/ \
+            -quiet \
+            build
+        env:
+          GITHUB_CI: "true"
+          CI: "true"
+
+      - name: Build status
+        run: echo "✅ Xcode build completed successfully on self-hosted runner"
