@@ -182,6 +182,11 @@ jobs:
           echo "- Yarn Cache: $(yarn cache dir)"
 
       # === RUBY ECOSYSTEM CHECKS ===
+      - uses: ruby/setup-ruby@a6e6f86333f0a2523ece813039b8b4be04560854 #v1
+        with:
+          ruby-version: '3.1.6'
+        env:
+          BUNDLE_GEMFILE: ios/Gemfile
       - name: Check Ruby ecosystem
         run: |
           echo "💎 Ruby Ecosystem:"
