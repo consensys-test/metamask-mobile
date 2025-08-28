@@ -1,5 +1,4 @@
-name: Test iOS Build QA App
-
+name: Test iOS Build App
 on:
   workflow_dispatch:
     inputs:
@@ -9,6 +8,7 @@ on:
         default: '7'
         type: string
   pull_request:
+
 
 permissions:
   contents: write
