@@ -79,7 +79,7 @@ jobs:
       - name: Setup iOS Environment
         run: |
           echo "🚀 Finishing iOS Setup..."
-          yarn setup:github-ci --build-ios --no-build-android
+          yarn setup:github-ci --build-ios --no-build-android --no-install-pods
           echo "🏗 Building iOS APP..."
           yarn build:ios:qa
         shell: bash
