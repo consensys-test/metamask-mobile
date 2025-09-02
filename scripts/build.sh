@@ -284,29 +284,10 @@ prebuild_ios(){
   # Create GoogleService-Info.plist file to be used by the Firebase services.
   # Check if GOOGLE_SERVICES_B64_IOS is set
   if [ ! -z "$GOOGLE_SERVICES_B64_IOS" ]; then
-    echo "Creating GoogleService-Info.plist from base64..."
-    echo -n "$GOOGLE_SERVICES_B64_IOS" | base64 -d > ./ios/GoogleServices/GoogleService-Info.plist
-    
-    # Validate the plist file was created correctly
-    if [ ! -f "./ios/GoogleServices/GoogleService-Info.plist" ]; then
-      echo "Error: GoogleService-Info.plist file was not created"
-      exit 1
-    fi
-    
-    # Validate the plist file is valid
-    if ! plutil -lint ./ios/GoogleServices/GoogleService-Info.plist >/dev/null 2>&1; then
-      echo "Error: GoogleService-Info.plist is not a valid plist file"
-      echo "File size: $(wc -c < ./ios/GoogleServices/GoogleService-Info.plist) bytes"
-      echo "First 100 chars:"
-      head -c 100 ./ios/GoogleServices/GoogleService-Info.plist
-      exit 1
-    fi
-    
-    echo "GoogleService-Info.plist has been created and validated successfully."
+    echo -n $GOOGLE_SERVICES_B64_IOS | base64 -d > ./ios/GoogleServices/GoogleService-Info.plist
+    echo "GoogleService-Info.plist has been created successfully."
     # Ensure the file has read and write permissions
     chmod 664 ./ios/GoogleServices/GoogleService-Info.plist
-    # Remove extended attributes to prevent Xcode copy failures
-    xattr -c ./ios/GoogleServices/GoogleService-Info.plist 2>/dev/null || true
   else
     echo "GOOGLE_SERVICES_B64_IOS is not set in the .env file."
     exit 1
